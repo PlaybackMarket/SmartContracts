@@ -2,15 +2,26 @@ import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { Sonic } from "../target/types/sonic";
 
-describe("sonic", () => {
+describe("initialize_program", () => {
   // Configure the client to use the local cluster.
   anchor.setProvider(anchor.AnchorProvider.env());
 
-  const program = anchor.workspace.sonic as Program<Sonic>;
+  const program = anchor.workspace.Sonic as Program<Sonic>;
 
   it("Is initialized!", async () => {
-    // Add your test here.
-    const tx = await program.methods.initialize().rpc();
+    // Generate a new keypair for the program account
+    const stateAccount = anchor.web3.Keypair.generate();
+
+    // Pass the new account to initialize
+    const tx = await program.methods
+      .initialize()
+      .accounts({
+        authority: anchor.getProvider().publicKey,
+        state: stateAccount.publicKey,
+      })
+      .signers([stateAccount])
+      .rpc();
+
     console.log("Your transaction signature", tx);
   });
 });
