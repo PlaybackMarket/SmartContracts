@@ -124,15 +124,21 @@ pub mod sonic {
             .checked_div(365 * 24 * 60 * 60 * 10000)
             .ok_or(ErrorCode::MathOverflow)? as u64;
 
-        // Transfer interest in SOL from borrower to lender
-        **ctx.accounts.borrower.try_borrow_mut_lamports()? = ctx
-            .accounts.borrower.lamports()
-            .checked_sub(interest)
-            .ok_or(ErrorCode::MathOverflow)?;
-        **ctx.accounts.lender.try_borrow_mut_lamports()? = ctx
-            .accounts.lender.lamports()
-            .checked_add(interest)
-            .ok_or(ErrorCode::MathOverflow)?;
+        // Transfer interest in SOL from borrower to lender using system program
+        let transfer_interest_ix = anchor_lang::solana_program::system_instruction::transfer(
+            &ctx.accounts.borrower.key(),
+            &ctx.accounts.lender.key(),
+            interest,
+        );
+        
+        anchor_lang::solana_program::program::invoke(
+            &transfer_interest_ix,
+            &[
+                ctx.accounts.borrower.to_account_info(),
+                ctx.accounts.lender.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
 
         // Return NFT to vault
         let transfer_ctx = CpiContext::new(
@@ -146,19 +152,26 @@ pub mod sonic {
         );
         token::transfer_checked(transfer_ctx, 1, 0)?;
 
-        // Return collateral to borrower
+        // Return collateral to borrower using system program
         let vault_authority_bump = ctx.bumps.vault_authority;
         let seeds = &[b"vault_authority".as_ref(), &[vault_authority_bump]];
         let signer = &[&seeds[..]];
 
-        **ctx.accounts.vault_authority.try_borrow_mut_lamports()? = ctx
-            .accounts.vault_authority.lamports()
-            .checked_sub(loan.collateral_amount)
-            .ok_or(ErrorCode::MathOverflow)?;
-        **ctx.accounts.borrower.try_borrow_mut_lamports()? = ctx
-            .accounts.borrower.lamports()
-            .checked_add(loan.collateral_amount)
-            .ok_or(ErrorCode::MathOverflow)?;
+        let transfer_collateral_ix = anchor_lang::solana_program::system_instruction::transfer(
+            &ctx.accounts.vault_authority.key(),
+            &ctx.accounts.borrower.key(),
+            loan.collateral_amount,
+        );
+        
+        anchor_lang::solana_program::program::invoke_signed(
+            &transfer_collateral_ix,
+            &[
+                ctx.accounts.vault_authority.to_account_info(),
+                ctx.accounts.borrower.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+            signer,
+        )?;
 
         // Return NFT to lender
         let transfer_ctx = CpiContext::new_with_signer(
@@ -193,15 +206,26 @@ pub mod sonic {
             ErrorCode::LoanNotLiquidatable
         );
 
-        // Transfer collateral SOL to lender
-        **ctx.accounts.vault_authority.try_borrow_mut_lamports()? = ctx
-            .accounts.vault_authority.lamports()
-            .checked_sub(loan.collateral_amount)
-            .ok_or(ErrorCode::MathOverflow)?;
-        **ctx.accounts.lender.try_borrow_mut_lamports()? = ctx
-            .accounts.lender.lamports()
-            .checked_add(loan.collateral_amount)
-            .ok_or(ErrorCode::MathOverflow)?;
+        // Transfer collateral SOL to lender using system program
+        let vault_authority_bump = ctx.bumps.vault_authority;
+        let seeds = &[b"vault_authority".as_ref(), &[vault_authority_bump]];
+        let signer = &[&seeds[..]];
+
+        let transfer_ix = anchor_lang::solana_program::system_instruction::transfer(
+            &ctx.accounts.vault_authority.key(),
+            &ctx.accounts.lender.key(),
+            loan.collateral_amount,
+        );
+        
+        anchor_lang::solana_program::program::invoke_signed(
+            &transfer_ix,
+            &[
+                ctx.accounts.vault_authority.to_account_info(),
+                ctx.accounts.lender.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+            signer,
+        )?;
 
         loan.is_liquidated = true;
         loan.is_active = false;
@@ -339,8 +363,9 @@ pub struct RepayLoan<'info> {
     #[account(mut)]
     pub borrower: Signer<'info>,
 
+    /// CHECK: Verified in logic
     #[account(mut)]
-    pub lender: SystemAccount<'info>,
+    pub lender: AccountInfo<'info>,
 
     #[account(
         mut,
@@ -380,6 +405,7 @@ pub struct RepayLoan<'info> {
     pub vault_authority: UncheckedAccount<'info>,
 
     pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
 

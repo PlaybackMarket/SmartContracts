@@ -252,6 +252,9 @@ describe("sonic", () => {
       )
     );
 
+    // Add delay after airdrop
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
     // Mint new NFT to lender for this test
     await mintTo(
       provider.connection,
@@ -261,6 +264,9 @@ describe("sonic", () => {
       lender,
       1
     );
+
+    // Add delay after minting
+    await new Promise(resolve => setTimeout(resolve, 1000));
 
     // Create new listing
     await program.methods
@@ -283,6 +289,9 @@ describe("sonic", () => {
       })
       .signers([lender, repayListing])
       .rpc();
+
+    // Add delay after listing
+    await new Promise(resolve => setTimeout(resolve, 1000));
 
     // Borrow using the new listing
     await program.methods.borrowNft()
