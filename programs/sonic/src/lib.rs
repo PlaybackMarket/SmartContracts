@@ -124,7 +124,19 @@ pub mod sonic {
             .checked_div(365 * 24 * 60 * 60 * 10000)
             .ok_or(ErrorCode::MathOverflow)? as u64;
 
-        // Transfer interest in SOL from borrower to lender using system program
+        // Return NFT to vault first
+        let transfer_ctx = CpiContext::new(
+            ctx.accounts.token_program.to_account_info(),
+            TransferChecked {
+                from: ctx.accounts.borrower_nft_account.to_account_info(),
+                mint: ctx.accounts.nft_mint.to_account_info(),
+                to: ctx.accounts.vault_nft_account.to_account_info(),
+                authority: ctx.accounts.borrower.to_account_info(),
+            },
+        );
+        token::transfer_checked(transfer_ctx, 1, 0)?;
+
+        // Transfer interest in SOL from borrower to lender
         let transfer_interest_ix = anchor_lang::solana_program::system_instruction::transfer(
             &ctx.accounts.borrower.key(),
             &ctx.accounts.lender.key(),
@@ -140,19 +152,7 @@ pub mod sonic {
             ],
         )?;
 
-        // Return NFT to vault
-        let transfer_ctx = CpiContext::new(
-            ctx.accounts.token_program.to_account_info(),
-            TransferChecked {
-                from: ctx.accounts.borrower_nft_account.to_account_info(),
-                mint: ctx.accounts.nft_mint.to_account_info(),
-                to: ctx.accounts.vault_nft_account.to_account_info(),
-                authority: ctx.accounts.borrower.to_account_info(),
-            },
-        );
-        token::transfer_checked(transfer_ctx, 1, 0)?;
-
-        // Return collateral to borrower using system program
+        // Return collateral to borrower
         let vault_authority_bump = ctx.bumps.vault_authority;
         let seeds = &[b"vault_authority".as_ref(), &[vault_authority_bump]];
         let signer = &[&seeds[..]];
@@ -240,6 +240,10 @@ pub mod sonic {
             ctx.accounts.listing.lender == ctx.accounts.lender.key(),
             ErrorCode::UnauthorizedAccess
         );
+
+        // Verify the vault has the NFT before proceeding
+        let vault_balance = ctx.accounts.vault_nft_account.amount;
+        require!(vault_balance == 1, ErrorCode::InvalidTokenBalance);
 
         // Transfer NFT back to lender from vault
         let vault_authority_bump = ctx.bumps.vault_authority;
@@ -524,4 +528,6 @@ pub enum ErrorCode {
     UnauthorizedAccess,
     #[msg("Math overflow")]
     MathOverflow,
+    #[msg("Invalid token balance")]
+    InvalidTokenBalance,
 }

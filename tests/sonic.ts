@@ -460,18 +460,91 @@ describe("sonic", () => {
     expect(loanAccount.isLiquidated).to.equal(true);
     expect(loanAccount.isActive).to.equal(false);
   });
+});
 
-  it("Cancels an NFT listing", async () => {
-    // First, create a new listing
-    const newListing = anchor.web3.Keypair.generate();
-    
-    // Ensure lender has enough SOL
+describe("cancel_listing", () => {
+  // Configure the client to use the local cluster
+  anchor.setProvider(anchor.AnchorProvider.env());
+
+  const program = anchor.workspace.Sonic as Program<Sonic>;
+  const provider = anchor.getProvider();
+
+  // Test accounts
+  let stateAccount: Keypair;
+  let nftMint: PublicKey;
+  let lender: Keypair;
+  let listing: Keypair;
+  
+  // Token accounts
+  let lenderNftAccount: PublicKey;
+  let vaultNftAccount: PublicKey;
+  
+  // PDAs
+  let vaultAuthority: PublicKey;
+  let vaultAuthorityBump: number;
+
+  beforeEach(async () => {
+    // Generate test accounts
+    stateAccount = anchor.web3.Keypair.generate();
+    lender = anchor.web3.Keypair.generate();
+    listing = anchor.web3.Keypair.generate();
+
+    // Fund lender account
     const lenderAirdrop = await provider.connection.requestAirdrop(
-      lender.publicKey, 
+      lender.publicKey,
       2 * anchor.web3.LAMPORTS_PER_SOL
     );
     await provider.connection.confirmTransaction(lenderAirdrop);
-    
+
+    // Create NFT mint
+    nftMint = await createMint(
+      provider.connection,
+      lender,
+      lender.publicKey,
+      null,
+      0
+    );
+
+    // Find PDA for vault authority
+    [vaultAuthority, vaultAuthorityBump] = await PublicKey.findProgramAddress(
+      [Buffer.from("vault_authority")],
+      program.programId
+    );
+
+    // Create token accounts
+    lenderNftAccount = await getAssociatedTokenAddress(nftMint, lender.publicKey);
+    vaultNftAccount = await getAssociatedTokenAddress(nftMint, vaultAuthority, true);
+
+    // Create ATAs
+    const createAccountsIx = [
+      createAssociatedTokenAccountInstruction(
+        provider.publicKey,
+        lenderNftAccount,
+        lender.publicKey,
+        nftMint
+      ),
+      createAssociatedTokenAccountInstruction(
+        provider.publicKey,
+        vaultNftAccount,
+        vaultAuthority,
+        nftMint
+      ),
+    ];
+
+    await provider.sendAndConfirm(new Transaction().add(...createAccountsIx));
+
+    // Initialize protocol state
+    await program.methods
+      .initialize()
+      .accounts({
+        authority: anchor.getProvider().publicKey,
+        state: stateAccount.publicKey,
+      })
+      .signers([stateAccount])
+      .rpc();
+  });
+
+  it("Successfully cancels an NFT listing", async () => {
     // Mint NFT to lender
     await mintTo(
       provider.connection,
@@ -482,7 +555,7 @@ describe("sonic", () => {
       1
     );
     
-    // List NFT
+    // Create listing
     await program.methods
       .listNft(
         new anchor.BN(7 * 24 * 60 * 60), // 7 days duration
@@ -491,7 +564,7 @@ describe("sonic", () => {
       )
       .accounts({
         lender: lender.publicKey,
-        listing: newListing.publicKey,
+        listing: listing.publicKey,
         nftMint: nftMint,
         lenderNftAccount: lenderNftAccount,
         vaultNftAccount: vaultNftAccount,
@@ -501,7 +574,7 @@ describe("sonic", () => {
         systemProgram: anchor.web3.SystemProgram.programId,
         rent: SYSVAR_RENT_PUBKEY,
       })
-      .signers([lender, newListing])
+      .signers([lender, listing])
       .rpc();
 
     // Verify NFT is in vault
@@ -513,7 +586,7 @@ describe("sonic", () => {
       .cancelListing()
       .accounts({
         lender: lender.publicKey,
-        listing: newListing.publicKey,
+        listing: listing.publicKey,
         nftMint: nftMint,
         vaultNftAccount: vaultNftAccount,
         lenderNftAccount: lenderNftAccount,
@@ -533,7 +606,7 @@ describe("sonic", () => {
 
     // Verify listing account was closed
     try {
-      await program.account.nftListing.fetch(newListing.publicKey);
+      await program.account.nftListing.fetch(listing.publicKey);
       assert.fail("Listing account should be closed");
     } catch (e) {
       expect(e.toString()).to.include("Account does not exist");
