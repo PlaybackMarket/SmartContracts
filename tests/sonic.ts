@@ -205,35 +205,34 @@ describe("sonic", () => {
         nftMint: nftMint,
       })
       .signers([borrower, loan])
-      .preInstructions([
-        // Add instruction to transfer SOL to vault_authority
-        anchor.web3.SystemProgram.transfer({
-          fromPubkey: borrower.publicKey,
-          toPubkey: vaultAuthority,
-          lamports: listingAccount.collateralAmount.toNumber(),
-        }),
-      ])
       .rpc();
 
     // Verify loan details
     const loanAccount = await program.account.loan.fetch(loan.publicKey);
     expect(loanAccount.borrower.toBase58()).to.equal(borrower.publicKey.toBase58());
     
-    // Verify SOL transfer - account for rent and transaction fees
+    // Verify SOL transfer
     const finalBorrowerBalance = await provider.connection.getBalance(borrower.publicKey);
     const finalVaultBalance = await provider.connection.getBalance(vaultAuthority);
     
-    const expectedCollateralTransfer = listingAccount.collateralAmount.toNumber();
+    // Calculate the actual transfer by considering rent for the new loan account
+    const rentExemptBalance = await provider.connection.getMinimumBalanceForRentExemption(
+      program.account.loan.size
+    );
+    
+    const expectedTotalCost = listingAccount.collateralAmount.toNumber() + rentExemptBalance;
     const actualTransfer = initialBorrowerBalance - finalBorrowerBalance;
     
-    // Allow for transaction fees and rent in the comparison
+    // Allow for transaction fees in the comparison
     expect(actualTransfer).to.be.approximately(
-      expectedCollateralTransfer,
-      0.1 * anchor.web3.LAMPORTS_PER_SOL // Allow more wiggle room for fees
+      expectedTotalCost,
+      0.1 * anchor.web3.LAMPORTS_PER_SOL
     );
 
     // Verify vault received exact collateral amount
-    expect(finalVaultBalance - initialVaultBalance).to.equal(expectedCollateralTransfer);
+    expect(finalVaultBalance - initialVaultBalance).to.equal(
+      listingAccount.collateralAmount.toNumber()
+    );
 
     // Verify NFT transfer
     const borrowerNftBalance = await provider.connection.getTokenAccountBalance(borrowerNftAccount);
@@ -241,8 +240,9 @@ describe("sonic", () => {
   });
 
   it("Repays a loan", async () => {
-    // Create new loan for this test to avoid state conflicts
+    // Create new loan and listing for this test
     const repayLoan = anchor.web3.Keypair.generate();
+    const repayListing = anchor.web3.Keypair.generate();
     
     // Ensure borrower has enough SOL
     await provider.connection.confirmTransaction(
@@ -252,11 +252,43 @@ describe("sonic", () => {
       )
     );
 
-    // Borrow first
+    // Mint new NFT to lender for this test
+    await mintTo(
+      provider.connection,
+      lender,
+      nftMint,
+      lenderNftAccount,
+      lender,
+      1
+    );
+
+    // Create new listing
+    await program.methods
+      .listNft(
+        new anchor.BN(7 * 24 * 60 * 60), // 7 days
+        new anchor.BN(1000), // 10% APR
+        new anchor.BN(100_000_000) // 100 USDC
+      )
+      .accounts({
+        lender: lender.publicKey,
+        listing: repayListing.publicKey,
+        nftMint: nftMint,
+        lenderNftAccount: lenderNftAccount,
+        vaultNftAccount: vaultNftAccount,
+        vaultAuthority: vaultAuthority,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+        rent: SYSVAR_RENT_PUBKEY,
+      })
+      .signers([lender, repayListing])
+      .rpc();
+
+    // Borrow using the new listing
     await program.methods.borrowNft()
       .accounts({
         borrower: borrower.publicKey,
-        listing: listing.publicKey,
+        listing: repayListing.publicKey,
         loan: repayLoan.publicKey,
         borrowerNftAccount: borrowerNftAccount,
         vaultNftAccount: vaultNftAccount,
@@ -278,13 +310,14 @@ describe("sonic", () => {
     const initialLenderBalance = await provider.connection.getBalance(lender.publicKey);
     const initialVaultBalance = await provider.connection.getBalance(vaultAuthority);
 
+    // Repay the loan
     const tx = await program.methods
       .repayLoan()
       .accounts({
         borrower: borrower.publicKey,
         lender: lender.publicKey,
         loan: repayLoan.publicKey,
-        listing: listing.publicKey,
+        listing: repayListing.publicKey,
         borrowerNftAccount: borrowerNftAccount,
         vaultNftAccount: vaultNftAccount,
         lenderNftAccount: lenderNftAccount,
