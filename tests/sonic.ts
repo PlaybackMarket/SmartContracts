@@ -373,5 +373,84 @@ describe("sonic", () => {
     const lenderCollateralBalance = await provider.connection.getTokenAccountBalance(lenderCollateralAccount);
     expect(lenderCollateralBalance.value.uiAmount).to.be.greaterThan(0);
   });
+
+  it("Cancels an NFT listing", async () => {
+    // First, create a new listing
+    const newListing = anchor.web3.Keypair.generate();
+    
+    // Ensure lender has enough SOL
+    const lenderAirdrop = await provider.connection.requestAirdrop(
+      lender.publicKey, 
+      2 * anchor.web3.LAMPORTS_PER_SOL
+    );
+    await provider.connection.confirmTransaction(lenderAirdrop);
+    
+    // Mint NFT to lender
+    await mintTo(
+      provider.connection,
+      lender,
+      nftMint,
+      lenderNftAccount,
+      lender,
+      1
+    );
+    
+    // List NFT
+    await program.methods
+      .listNft(
+        new anchor.BN(7 * 24 * 60 * 60), // 7 days duration
+        new anchor.BN(1000), // 10% APR
+        new anchor.BN(100_000_000) // 100 USDC
+      )
+      .accounts({
+        lender: lender.publicKey,
+        listing: newListing.publicKey,
+        nftMint: nftMint,
+        lenderNftAccount: lenderNftAccount,
+        vaultNftAccount: vaultNftAccount,
+        vaultAuthority: vaultAuthority,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+        rent: SYSVAR_RENT_PUBKEY,
+      })
+      .signers([lender, newListing])
+      .rpc();
+
+    // Verify NFT is in vault
+    let vaultBalance = await provider.connection.getTokenAccountBalance(vaultNftAccount);
+    expect(vaultBalance.value.amount).to.equal("1");
+
+    // Cancel the listing
+    const tx = await program.methods
+      .cancelListing()
+      .accounts({
+        lender: lender.publicKey,
+        listing: newListing.publicKey,
+        nftMint: nftMint,
+        vaultNftAccount: vaultNftAccount,
+        lenderNftAccount: lenderNftAccount,
+        vaultAuthority: vaultAuthority,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .signers([lender])
+      .rpc();
+
+    // Verify NFT returned to lender
+    const lenderBalance = await provider.connection.getTokenAccountBalance(lenderNftAccount);
+    expect(lenderBalance.value.amount).to.equal("1");
+
+    // Verify vault is empty
+    vaultBalance = await provider.connection.getTokenAccountBalance(vaultNftAccount);
+    expect(vaultBalance.value.amount).to.equal("0");
+
+    // Verify listing account was closed
+    try {
+      await program.account.nftListing.fetch(newListing.publicKey);
+      assert.fail("Listing account should be closed");
+    } catch (e) {
+      expect(e.toString()).to.include("Account does not exist");
+    }
+  });
 });
 

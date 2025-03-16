@@ -218,6 +218,33 @@ pub mod sonic {
 
         Ok(())
     }
+
+    pub fn cancel_listing(ctx: Context<CancelListing>) -> Result<()> {
+        require!(ctx.accounts.listing.is_active, ErrorCode::ListingNotActive);
+        require!(
+            ctx.accounts.listing.lender == ctx.accounts.lender.key(),
+            ErrorCode::UnauthorizedAccess
+        );
+
+        // Transfer NFT back to lender from vault
+        let vault_authority_bump = ctx.bumps.vault_authority;
+        let seeds = &[b"vault_authority".as_ref(), &[vault_authority_bump]];
+        let signer = &[&seeds[..]];
+
+        let transfer_ctx = CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            TransferChecked {
+                from: ctx.accounts.vault_nft_account.to_account_info(),
+                mint: ctx.accounts.nft_mint.to_account_info(),
+                to: ctx.accounts.lender_nft_account.to_account_info(),
+                authority: ctx.accounts.vault_authority.to_account_info(),
+            },
+            signer,
+        );
+        token::transfer_checked(transfer_ctx, 1, 0)?;
+
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -431,6 +458,42 @@ pub struct LiquidateLoan<'info> {
         token::authority = listing.lender
     )]
     pub lender_collateral_account: Box<Account<'info, TokenAccount>>,
+
+    /// CHECK: PDA for vault authority
+    #[account(seeds = [b"vault_authority"], bump)]
+    pub vault_authority: UncheckedAccount<'info>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct CancelListing<'info> {
+    #[account(mut)]
+    pub lender: Signer<'info>,
+
+    #[account(
+        mut,
+        constraint = listing.lender == lender.key() @ ErrorCode::UnauthorizedAccess,
+        constraint = listing.is_active @ ErrorCode::ListingNotActive,
+        close = lender // This will close the account and send rent to lender
+    )]
+    pub listing: Account<'info, NFTListing>,
+
+    pub nft_mint: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        token::mint = nft_mint,
+        token::authority = vault_authority
+    )]
+    pub vault_nft_account: Box<Account<'info, TokenAccount>>,
+
+    #[account(
+        mut,
+        token::mint = nft_mint,
+        token::authority = lender
+    )]
+    pub lender_nft_account: Box<Account<'info, TokenAccount>>,
 
     /// CHECK: PDA for vault authority
     #[account(seeds = [b"vault_authority"], bump)]
