@@ -56,17 +56,16 @@ pub mod sonic {
 
         require!(listing.is_active, ErrorCode::ListingNotActive);
 
-        // Transfer collateral from borrower
-        let transfer_ctx = CpiContext::new(
-            ctx.accounts.token_program.to_account_info(),
-            TransferChecked {
-                from: ctx.accounts.borrower_collateral_account.to_account_info(),
-                mint: ctx.accounts.collateral_mint.to_account_info(),
-                to: ctx.accounts.vault_collateral_account.to_account_info(),
-                authority: ctx.accounts.borrower.to_account_info(),
-            },
-        );
-        token::transfer_checked(transfer_ctx, listing.collateral_amount, ctx.accounts.collateral_mint.decimals)?;
+        // Transfer SOL from borrower to vault
+        let transfer_amount = listing.collateral_amount;
+        **ctx.accounts.borrower.try_borrow_mut_lamports()? = ctx
+            .accounts.borrower.lamports()
+            .checked_sub(transfer_amount)
+            .ok_or(ErrorCode::MathOverflow)?;
+        **ctx.accounts.vault_authority.try_borrow_mut_lamports()? = ctx
+            .accounts.vault_authority.lamports()
+            .checked_add(transfer_amount)
+            .ok_or(ErrorCode::MathOverflow)?;
 
         // Transfer NFT to borrower
         let vault_authority_bump = ctx.bumps.vault_authority;
@@ -107,10 +106,9 @@ pub mod sonic {
         require!(loan.is_active, ErrorCode::LoanNotActive);
         require!(!loan.is_liquidated, ErrorCode::LoanLiquidated);
 
+        // Calculate interest
         let clock = Clock::get()?;
         let current_time = clock.unix_timestamp;
-        
-        // Calculate interest
         let time_elapsed = current_time.checked_sub(loan.start_time)
             .ok_or(ErrorCode::MathOverflow)?;
         let interest = (loan.collateral_amount as u128)
@@ -121,17 +119,15 @@ pub mod sonic {
             .checked_div(365 * 24 * 60 * 60 * 10000)
             .ok_or(ErrorCode::MathOverflow)? as u64;
 
-        // Transfer interest payment
-        let transfer_ctx = CpiContext::new(
-            ctx.accounts.token_program.to_account_info(),
-            TransferChecked {
-                from: ctx.accounts.borrower_collateral_account.to_account_info(),
-                mint: ctx.accounts.collateral_mint.to_account_info(),
-                to: ctx.accounts.lender_collateral_account.to_account_info(),
-                authority: ctx.accounts.borrower.to_account_info(),
-            },
-        );
-        token::transfer_checked(transfer_ctx, interest, ctx.accounts.collateral_mint.decimals)?;
+        // Transfer interest in SOL from borrower to lender
+        **ctx.accounts.borrower.try_borrow_mut_lamports()? = ctx
+            .accounts.borrower.lamports()
+            .checked_sub(interest)
+            .ok_or(ErrorCode::MathOverflow)?;
+        **ctx.accounts.lender.try_borrow_mut_lamports()? = ctx
+            .accounts.lender.lamports()
+            .checked_add(interest)
+            .ok_or(ErrorCode::MathOverflow)?;
 
         // Return NFT to vault
         let transfer_ctx = CpiContext::new(
@@ -150,17 +146,14 @@ pub mod sonic {
         let seeds = &[b"vault_authority".as_ref(), &[vault_authority_bump]];
         let signer = &[&seeds[..]];
 
-        let transfer_ctx = CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            TransferChecked {
-                from: ctx.accounts.vault_collateral_account.to_account_info(),
-                mint: ctx.accounts.collateral_mint.to_account_info(),
-                to: ctx.accounts.borrower_collateral_account.to_account_info(),
-                authority: ctx.accounts.vault_authority.to_account_info(),
-            },
-            signer,
-        );
-        token::transfer_checked(transfer_ctx, loan.collateral_amount, ctx.accounts.collateral_mint.decimals)?;
+        **ctx.accounts.vault_authority.try_borrow_mut_lamports()? = ctx
+            .accounts.vault_authority.lamports()
+            .checked_sub(loan.collateral_amount)
+            .ok_or(ErrorCode::MathOverflow)?;
+        **ctx.accounts.borrower.try_borrow_mut_lamports()? = ctx
+            .accounts.borrower.lamports()
+            .checked_add(loan.collateral_amount)
+            .ok_or(ErrorCode::MathOverflow)?;
 
         // Return NFT to lender
         let transfer_ctx = CpiContext::new_with_signer(
@@ -195,22 +188,15 @@ pub mod sonic {
             ErrorCode::LoanNotLiquidatable
         );
 
-        // Transfer collateral to lender
-        let vault_authority_bump = ctx.bumps.vault_authority;
-        let seeds = &[b"vault_authority".as_ref(), &[vault_authority_bump]];
-        let signer = &[&seeds[..]];
-
-        let transfer_ctx = CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            TransferChecked {
-                from: ctx.accounts.vault_collateral_account.to_account_info(),
-                mint: ctx.accounts.collateral_mint.to_account_info(),
-                to: ctx.accounts.lender_collateral_account.to_account_info(),
-                authority: ctx.accounts.vault_authority.to_account_info(),
-            },
-            signer,
-        );
-        token::transfer_checked(transfer_ctx, loan.collateral_amount, ctx.accounts.collateral_mint.decimals)?;
+        // Transfer collateral SOL to lender
+        **ctx.accounts.vault_authority.try_borrow_mut_lamports()? = ctx
+            .accounts.vault_authority.lamports()
+            .checked_sub(loan.collateral_amount)
+            .ok_or(ErrorCode::MathOverflow)?;
+        **ctx.accounts.lender.try_borrow_mut_lamports()? = ctx
+            .accounts.lender.lamports()
+            .checked_add(loan.collateral_amount)
+            .ok_or(ErrorCode::MathOverflow)?;
 
         loan.is_liquidated = true;
         loan.is_active = false;
@@ -318,22 +304,6 @@ pub struct BorrowNFT<'info> {
     )]
     pub loan: Account<'info, Loan>,
 
-    pub collateral_mint: Account<'info, Mint>,
-
-    #[account(
-        mut,
-        token::mint = collateral_mint,
-        token::authority = borrower
-    )]
-    pub borrower_collateral_account: Account<'info, TokenAccount>,
-
-    #[account(
-        mut,
-        token::mint = collateral_mint,
-        token::authority = vault_authority
-    )]
-    pub vault_collateral_account: Box<Account<'info, TokenAccount>>,
-
     #[account(
         mut,
         token::mint = listing.nft_mint,
@@ -349,11 +319,10 @@ pub struct BorrowNFT<'info> {
     pub vault_nft_account: Box<Account<'info, TokenAccount>>,
 
     /// CHECK: PDA for vault authority
-    #[account(seeds = [b"vault_authority"], bump)]
+    #[account(mut, seeds = [b"vault_authority"], bump)]
     pub vault_authority: UncheckedAccount<'info>,
 
     pub token_program: Program<'info, Token>,
-    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
 
@@ -365,6 +334,9 @@ pub struct RepayLoan<'info> {
     #[account(mut)]
     pub borrower: Signer<'info>,
 
+    #[account(mut)]
+    pub lender: SystemAccount<'info>,
+
     #[account(
         mut,
         constraint = loan.borrower == borrower.key() @ ErrorCode::UnauthorizedAccess,
@@ -375,57 +347,35 @@ pub struct RepayLoan<'info> {
     #[account(mut)]
     pub listing: Account<'info, NFTListing>,
 
-    pub collateral_mint: Account<'info, Mint>,
+    pub nft_mint: Account<'info, Mint>,
 
     #[account(
         mut,
-        token::mint = collateral_mint,
-        token::authority = borrower
-    )]
-    pub borrower_collateral_account: Account<'info, TokenAccount>,
-
-    #[account(
-        mut,
-        token::mint = collateral_mint,
-        token::authority = vault_authority
-    )]
-    pub vault_collateral_account: Box<Account<'info, TokenAccount>>,
-
-    #[account(
-        mut,
-        token::mint = collateral_mint,
-        token::authority = listing.lender
-    )]
-    pub lender_collateral_account: Box<Account<'info, TokenAccount>>,
-
-    #[account(
-        mut,
-        token::mint = listing.nft_mint,
+        token::mint = nft_mint,
         token::authority = borrower
     )]
     pub borrower_nft_account: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
-        token::mint = listing.nft_mint,
+        token::mint = nft_mint,
         token::authority = vault_authority
     )]
     pub vault_nft_account: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
-        token::mint = listing.nft_mint,
+        token::mint = nft_mint,
         token::authority = listing.lender
     )]
     pub lender_nft_account: Box<Account<'info, TokenAccount>>,
 
     /// CHECK: PDA for vault authority
-    #[account(seeds = [b"vault_authority"], bump)]
+    #[account(mut, seeds = [b"vault_authority"], bump)]
     pub vault_authority: UncheckedAccount<'info>,
 
     pub token_program: Program<'info, Token>,
-
-    pub nft_mint: Account<'info, Mint>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -433,37 +383,20 @@ pub struct LiquidateLoan<'info> {
     #[account(mut)]
     pub liquidator: Signer<'info>,
 
-    #[account(
-        mut,
-        constraint = loan.is_active @ ErrorCode::LoanNotActive,
-        constraint = !loan.is_liquidated @ ErrorCode::LoanLiquidated
-    )]
+    #[account(mut)]
+    pub lender: SystemAccount<'info>,
+
+    #[account(mut)]
     pub loan: Account<'info, Loan>,
 
     #[account(mut)]
     pub listing: Account<'info, NFTListing>,
 
-    pub collateral_mint: Account<'info, Mint>,
-
-    #[account(
-        mut,
-        token::mint = collateral_mint,
-        token::authority = vault_authority
-    )]
-    pub vault_collateral_account: Account<'info, TokenAccount>,
-
-    #[account(
-        mut,
-        token::mint = collateral_mint,
-        token::authority = listing.lender
-    )]
-    pub lender_collateral_account: Box<Account<'info, TokenAccount>>,
-
     /// CHECK: PDA for vault authority
-    #[account(seeds = [b"vault_authority"], bump)]
+    #[account(mut, seeds = [b"vault_authority"], bump)]
     pub vault_authority: UncheckedAccount<'info>,
 
-    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
