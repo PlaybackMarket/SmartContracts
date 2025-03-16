@@ -56,16 +56,21 @@ pub mod sonic {
 
         require!(listing.is_active, ErrorCode::ListingNotActive);
 
-        // Transfer SOL from borrower to vault
-        let transfer_amount = listing.collateral_amount;
-        **ctx.accounts.borrower.try_borrow_mut_lamports()? = ctx
-            .accounts.borrower.lamports()
-            .checked_sub(transfer_amount)
-            .ok_or(ErrorCode::MathOverflow)?;
-        **ctx.accounts.vault_authority.try_borrow_mut_lamports()? = ctx
-            .accounts.vault_authority.lamports()
-            .checked_add(transfer_amount)
-            .ok_or(ErrorCode::MathOverflow)?;
+        // Transfer SOL from borrower to vault using system program
+        let transfer_ix = anchor_lang::solana_program::system_instruction::transfer(
+            &ctx.accounts.borrower.key(),
+            &ctx.accounts.vault_authority.key(),
+            listing.collateral_amount,
+        );
+        
+        anchor_lang::solana_program::program::invoke(
+            &transfer_ix,
+            &[
+                ctx.accounts.borrower.to_account_info(),
+                ctx.accounts.vault_authority.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
 
         // Transfer NFT to borrower
         let vault_authority_bump = ctx.bumps.vault_authority;
