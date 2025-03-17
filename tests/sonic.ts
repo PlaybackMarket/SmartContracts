@@ -244,6 +244,9 @@ describe("sonic", () => {
     const repayLoan = anchor.web3.Keypair.generate();
     const repayListing = anchor.web3.Keypair.generate();
     
+    // Add delay between operations
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
     // Ensure borrower has enough SOL
     await provider.connection.confirmTransaction(
       await provider.connection.requestAirdrop(
@@ -252,8 +255,8 @@ describe("sonic", () => {
       )
     );
 
-    // Add delay after airdrop
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Add delay between operations
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
     // Mint new NFT to lender for this test
     await mintTo(
@@ -265,14 +268,14 @@ describe("sonic", () => {
       1
     );
 
-    // Add delay after minting
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Add delay between operations
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
     // Create new listing
     await program.methods
       .listNft(
         new anchor.BN(7 * 24 * 60 * 60), // 7 days
-        new anchor.BN(1000), // 10% APR
+        new anchor.BN(100000), // 10% APR
         new anchor.BN(100_000_000) // 100 USDC
       )
       .accounts({
@@ -290,8 +293,8 @@ describe("sonic", () => {
       .signers([lender, repayListing])
       .rpc();
 
-    // Add delay after listing
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Add delay between operations
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
     // Borrow using the new listing
     await program.methods.borrowNft()
@@ -311,8 +314,17 @@ describe("sonic", () => {
       .signers([borrower, repayLoan])
       .rpc();
 
-    // Wait for interest to accrue
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // Fast forward blockchain time - Replace the existing time advancement code
+    const confirmOptions = { commitment: 'confirmed' };
+    const sleepTime = 1500; // 1.5 seconds
+    await new Promise(resolve => setTimeout(resolve, sleepTime));
+    
+    // Request a new airdrop to generate a new block
+    await provider.connection.requestAirdrop(
+      provider.publicKey,
+      anchor.web3.LAMPORTS_PER_SOL,
+      confirmOptions
+    );
 
     // Get initial balances
     const initialBorrowerBalance = await provider.connection.getBalance(borrower.publicKey);
